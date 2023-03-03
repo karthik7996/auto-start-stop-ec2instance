@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Lambda function to stop and start EC2 and RDS instances
+Transform: AWS::Serverless-2016-10-31
+Metadata:
+  Version: ' 1.0.1'
+  LastEditedBy: Sreekanth Reddy
+  LastEditedOn: 29/11/2021
+  LastEdit: Add Lambda env variables and Start/StopTime parameters
+  Unimplemented Resources: {}
+Parameters:
+  Tenancy:
+    Description: Tenant
+    Type: String
+    Default: Ops
+  Environment:
+    Description: Environment value
+    Type: String
+    Default: test
+  StartTime:
+    Description: Time to start instances (UTC)
+    Type: String
+    Default: "08"
+  StopTime:
+    Description: Time to stop instances (UTC)
+    Type: String
+    Default: "17"
+  SlackUrl:
+    Description: enter slack webhook to receive alerts
+    Type: String
+    Default:  https://hooks.slack.com/services/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
+  TeamsUrl:
+    Description: enter teams webhook to receive alerts
+    Type: String
+    Default: https://cloudzenix.webhook.office.com/webhookb2/6b3ba5ea-708c-4629-9f20-7c1b09d46619@0ca8b1bf-7c75-4720-85bf-8569448da8a3/IncomingWebhook/f16a9d9f437c4b32b5d290dd3e529a72/e6dbaf6f-fc1e-47ac-b2cd-b59a44638d22
+   
+Resources:
+  StartStopEC2Function:
+    Type: AWS::Serverless::Function
+    Description: !Sub 'Function to auto stop/start instances based on tag ${Environment}'
+    Properties:
+      FunctionName: !Sub ${Tenancy}-${Environment}-start-stop-ec2
+      Timeout: 900
+      MemorySize: 1024
+      Runtime: python3.8
+      CodeUri: ./lambda/start_stop_ec2.py
+      Handler: start_stop_ec2.lambda_handler
+      Role: !GetAtt EC2ExecutionRole.Arn
+      Environment:
+        Variables:
+          slack_url: !Ref SlackUrl
+          teams_url: !Ref TeamsUrl
+
+  EC2ExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition: {}
+      Path: /service-role/
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: StartStopEC2RDS
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ForEC2
+                Action:
+                  - 'ec2:StartInstances'
+                  - 'ec2:StopInstances'
+                  - 'ec2:DescribeTags'
+                  - 'ec2:DescribeInstances'
+                  - 'autoscaling:DescribeAutoScalingGroups'
+                  - 'autoscaling:UpdateAutoScalingGroup'
+                  - 'autoscaling:SuspendProcesses'
+                  - 'autoscaling:ResumeProcesses'
+                Effect: Allow
+                Resource: '*'
+  StartEC2EventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Join 
+        - '-'
+        - - !Ref Tenancy
+          - !Ref Environment
+          - start-ec2-rule
+      Description: Daily execution of Start EC2 Function
+      ScheduleExpression: !Sub cron(25 ${StartTime} ? * MON-FRI *)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt 
+            - StartStopEC2Function
+            - Arn
+          Id: StartEC2Function
+          Input: '{"Operation": "Start"}'
+  StartEC2ExecutionPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:invokeFunction'
+      FunctionName: !Ref StartStopEC2Function
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 
+        - StartEC2EventRule
+        - Arn
+  StopEC2EventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Join 
+        - '-'
+        - - !Ref Tenancy
+          - !Ref Environment
+          - stop-ec2-rule
+      Description: Daily execution of Stop EC2 Function
+      ScheduleExpression: !Sub cron(35 ${StopTime} ? * MON-FRI *)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt 
+            - StartStopEC2Function
+            - Arn
+          Id: StopEC2Function
+          Input: '{"Operation": "Stop"}'
+  StopEC2ExecutionPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:invokeFunction'
+      FunctionName: !Ref StartStopEC2Function
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 
+        - StopEC2EventRule
+        - Arn
